@@ -8,8 +8,8 @@ services:
     depends_on:
       - redis
       - db
-    environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/nural_ea
+    env_file:
+      - .env
 
   redis:
     image: "redis:alpine"
@@ -18,7 +18,5 @@ services:
     image: "timescale/timescaledb:latest-pg14"
     ports:
       - "5432:5432"
-    environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=nural_ea
+    env_file:
+      - .env

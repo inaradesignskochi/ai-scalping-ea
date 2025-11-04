@@ -2,11 +2,12 @@ import asyncio
 import aiohttp
 from redis import Redis
 import websockets
+import os
 from .sources import MT4TickStream, CryptoWebSocket, NewsAggregator, SocialScraper
 
 class DataAggregator:
     def __init__(self):
-        self.redis_client = Redis(host='localhost', port=6379, decode_responses=True)
+        self.redis_client = Redis(host=os.environ.get('REDIS_HOST', 'redis'), port=6379, decode_responses=True)
         self.sources = {
             'mt4_ticks': MT4TickStream(),
             'crypto_ws': CryptoWebSocket(['binance', 'coinbase']),
