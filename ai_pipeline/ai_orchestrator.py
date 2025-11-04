@@ -1,3 +1,4 @@
+import os
 import psycopg2
 import pickle
 import numpy as np
@@ -5,7 +6,7 @@ from typing import Dict, List
 
 class AIOrchestrator:
     def __init__(self):
-        self.db = psycopg2.connect("DATABASE_URL")
+        self.db = psycopg2.connect(os.environ.get("DATABASE_URL"))
         self.model_registry = {}
         self.active_agents = {}
         self.performance_metrics = {}

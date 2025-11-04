@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    depends_on:
+      - redis
+      - db
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/nural_ea
+
+  redis:
+    image: "redis:alpine"
+
+  db:
+    image: "timescale/timescaledb:latest-pg14"
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=nural_ea
