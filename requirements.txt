@@ -1,0 +1,7 @@
+aiohttp
+redis
+websockets
+psycopg2-binary
+numpy
+zmq
+streamlit
