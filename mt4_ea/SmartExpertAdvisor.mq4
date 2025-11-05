@@ -1,1 +1,0 @@
-// This file will contain the MQL4 code for the Smart Expert Advisor.

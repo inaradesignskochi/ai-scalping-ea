@@ -1,22 +1,158 @@
 version: '3.8'
 
 services:
-  app:
-    build: .
-    ports:
-      - "8501:8501"
-    depends_on:
-      - redis
-      - db
-    env_file:
-      - .env
-
-  redis:
-    image: "redis:alpine"
-
-  db:
-    image: "timescale/timescaledb:latest-pg14"
+  postgres:
+    image: timescale/timescaledb:latest-pg14
+    container_name: ai-scalping-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
-    env_file:
-      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-scalping-redis
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  ai_backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai-scalping-backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
+      MARKETAUX_API_KEY: ${MARKETAUX_API_KEY}
+      EODHD_API_KEY: ${EODHD_API_KEY}
+      FMP_API_KEY: ${FMP_API_KEY}
+      NEWSAPI_API_KEY: ${NEWSAPI_API_KEY}
+      GDELT_API_KEY: ${GDELT_API_KEY}
+      SECRET_KEY: ${SECRET_KEY}
+      ZMQ_SIGNAL_PORT: ${ZMQ_SIGNAL_PORT}
+      ZMQ_HEARTBEAT_PORT: ${ZMQ_HEARTBEAT_PORT}
+      WEBSOCKET_PORT: ${WEBSOCKET_PORT}
+      CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD}
+      MODEL_UPDATE_INTERVAL: ${MODEL_UPDATE_INTERVAL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${ZMQ_SIGNAL_PORT}:${ZMQ_SIGNAL_PORT}"
+      - "${ZMQ_HEARTBEAT_PORT}:${ZMQ_HEARTBEAT_PORT}"
+      - "${WEBSOCKET_PORT}:${WEBSOCKET_PORT}"
+    volumes:
+      - ./backend/models:/app/models
+      - ./backend/logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import zmq; ctx = zmq.Context(); s = ctx.socket(zmq.REP); s.bind('tcp://0.0.0.0:${ZMQ_HEARTBEAT_PORT}')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  streamlit:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: ai-scalping-dashboard
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      STREAMLIT_PORT: ${STREAMLIT_PORT}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${STREAMLIT_PORT}:${STREAMLIT_PORT}"
+    volumes:
+      - ./dashboard:/app
+    restart: unless-stopped
+    command: streamlit run app.py --server.port ${STREAMLIT_PORT} --server.address 0.0.0.0
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ai-scalping-prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT}:${PROMETHEUS_PORT}"
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ai-scalping-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: "grafana-piechart-panel,grafana-worldmap-panel"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    ports:
+      - "${GRAFANA_PORT}:${GRAFANA_PORT}"
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  node_exporter:
+    image: prom/node-exporter:latest
+    container_name: ai-scalping-node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: ai-scalping-network

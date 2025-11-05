@@ -1,0 +1,171 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "AI Scalping EA - System Overview",
+    "tags": ["trading", "ai", "scalping"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Account Balance & P&L",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "account_balance",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "red",
+                  "value": 0
+                }
+              ]
+            }
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "title": "Open Trades",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "open_trades_count",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 0
+        }
+      },
+      {
+        "id": 3,
+        "title": "System Latency",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "zmq_latency_ms",
+            "refId": "A",
+            "legendFormat": "ZMQ Latency"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 24,
+          "x": 0,
+          "y": 8
+        }
+      },
+      {
+        "id": 4,
+        "title": "AI Model Performance",
+        "type": "table",
+        "targets": [
+          {
+            "expr": "ai_model_performance",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {
+          "h": 12,
+          "w": 12,
+          "x": 0,
+          "y": 16
+        }
+      },
+      {
+        "id": 5,
+        "title": "Trade Win Rate Over Time",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(trade_wins_total[5m]) / rate(trades_total[5m]) * 100",
+            "refId": "A",
+            "legendFormat": "Win Rate %"
+          }
+        ],
+        "gridPos": {
+          "h": 12,
+          "w": 12,
+          "x": 12,
+          "y": 16
+        }
+      },
+      {
+        "id": 6,
+        "title": "Data Ingestion Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(data_points_ingested_total[5m])",
+            "refId": "A",
+            "legendFormat": "Data Points/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 24,
+          "x": 0,
+          "y": 28
+        }
+      },
+      {
+        "id": 7,
+        "title": "System Resources",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "100 - (avg by (instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+            "refId": "A",
+            "legendFormat": "CPU Usage %"
+          },
+          {
+            "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+            "refId": "B",
+            "legendFormat": "Memory Usage %"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 24,
+          "x": 0,
+          "y": 36
+        }
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "timepicker": {},
+    "templating": {
+      "list": []
+    },
+    "annotations": {
+      "list": []
+    },
+    "refresh": "5s",
+    "schemaVersion": 27,
+    "version": 0,
+    "links": []
+  }
+}
