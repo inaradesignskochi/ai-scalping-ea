@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "sequentialthinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ]
+    },
+    "git": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-git",
+        "--repository",
+        "https://github.com/inaradesignskochi/OneCliq.git"
+      ]
+    },
+    "puppeteer": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-puppeteer"
+      ]
+    },
+    "codegen": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/codegen-sh/codegen-sdk.git#egg=codegen-mcp-server&subdirectory=codegen-examples/examples/codegen-mcp-server",
+        "codegen-mcp-server"
+      ]
+    }
+  }
+}

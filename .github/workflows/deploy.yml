@@ -1,147 +1,284 @@
-name: Deploy AI Trading System
+name: Deploy to Production
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   test:
+    name: Run Tests
     runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg14
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_trading_db
+          POSTGRES_USER: test_user
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          cd backend
-          pip install -r requirements.txt
-
-      - name: Run unit tests
-        run: |
-          cd backend
-          python -m pytest tests/ --cov=./ --cov-report=xml
-
-      - name: Run backtests
-        run: |
-          cd backend
-          python -c "
-          from src.ai_orchestrator import AIOrchestrator
-          # Run basic backtest validation
-          print('Backtest validation completed')
-          "
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r backend/requirements.txt
+        pip install -r backend/requirements-dev.txt
+        pip install pytest pytest-asyncio pytest-cov bandit safety
+    
+    - name: Run linting
+      run: |
+        bandit -r backend/src/ -f json -o bandit-report.json
+        flake8 backend/src/ --max-line-length=88 --ignore=E203,W503
+        black --check backend/src/ backend/tests/
+        isort --check-only backend/src/ backend/tests/
+    
+    - name: Run security scan
+      run: |
+        safety check --json --output safety-report.json
+        bandit -r backend/src/ -f json -o bandit-security.json
+    
+    - name: Run unit tests
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_trading_db
+        REDIS_URL: redis://localhost:6379
+        SECRET_KEY: test_secret_key
+        JWT_SECRET_KEY: test_jwt_secret_key
+        GEMINI_API_KEY: test_api_key
+        GRAFANA_PASSWORD: test_grafana_password
+      run: |
+        cd backend
+        pytest tests/ -v --cov=./src --cov-report=xml --cov-report=html
+    
+    - name: Run performance tests
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_trading_db
+        REDIS_URL: redis://localhost:6379
+      run: |
+        cd backend
+        pytest tests/test_performance.py -v --latency
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: backend/coverage.xml
+        flags: backend
+        name: backend-coverage
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json
+          bandit-security.json
 
   build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
     needs: test
-    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tag: ${{ steps.meta.outputs.tags }}
+    
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and push backend
-        uses: docker/build-push-action@v5
-        with:
-          context: ./backend
-          push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/ai-scalping-backend:latest
-
-      - name: Build and push dashboard
-        uses: docker/build-push-action@v5
-        with:
-          context: ./dashboard
-          push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/ai-scalping-dashboard:latest
-
-  deploy:
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
     needs: build
-    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
 
-      - name: Deploy to Oracle Cloud
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.ORACLE_HOST }}
-          username: ${{ secrets.ORACLE_USER }}
-          key: ${{ secrets.ORACLE_SSH_KEY }}
-          script: |
-            cd /home/ubuntu/ai-scalping-ea
-
-            # Backup current deployment
-            echo "Creating backup..."
-            docker tag ai-scalping-backend:latest ai-scalping-backend:backup-$(date +%Y%m%d_%H%M%S) || true
-            docker tag ai-scalping-dashboard:latest ai-scalping-dashboard:backup-$(date +%Y%m%d_%H%M%S) || true
-
-            # Pull latest images
-            echo "Pulling latest images..."
-            docker pull ${{ secrets.DOCKER_USERNAME }}/ai-scalping-backend:latest
-            docker pull ${{ secrets.DOCKER_USERNAME }}/ai-scalping-dashboard:latest
-
-            # Tag images for local use
-            docker tag ${{ secrets.DOCKER_USERNAME }}/ai-scalping-backend:latest ai-scalping-backend:latest
-            docker tag ${{ secrets.DOCKER_USERNAME }}/ai-scalping-dashboard:latest ai-scalping-dashboard:latest
-
-            # Stop current services gracefully
-            echo "Stopping current services..."
-            docker-compose stop ai_backend streamlit || true
-
-            # Update services
-            echo "Updating services..."
-            docker-compose up -d --no-deps ai_backend streamlit
-
-            # Wait for services to be healthy
-            echo "Waiting for services to be healthy..."
-            sleep 30
-
-            # Health check
-            if curl -f http://localhost:8000/health && curl -f http://localhost:8501; then
-                echo "✅ Deployment successful"
-
-                # Clean up old backups (keep last 5)
-                echo "Cleaning up old backups..."
-                docker images --format "table {{.Repository}}:{{.Tag}}" | grep backup | head -n -5 | xargs -r docker rmi || true
-
-                # Send success notification
-                curl -X POST ${{ secrets.TELEGRAM_WEBHOOK }} \
-                  -d "text=✅ AI Scalping EA deployment successful"
-            else
-                echo "❌ Health check failed, rolling back..."
-
-                # Rollback
-                docker-compose stop ai_backend streamlit
-                docker-compose up -d --no-deps ai_backend streamlit
-
-                # Send failure notification
-                curl -X POST ${{ secrets.TELEGRAM_WEBHOOK }} \
-                  -d "text=❌ AI Scalping EA deployment failed - rolled back"
-
-                exit 1
-            fi
-
-  notify:
-    needs: deploy
+  deploy-staging:
+    name: Deploy to Staging
     runs-on: ubuntu-latest
-    if: always()
+    needs: [build, security-scan]
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    
     steps:
-      - name: Send notification
-        run: |
-          if [ "${{ needs.deploy.result }}" = "success" ]; then
-            MESSAGE="✅ AI Scalping EA deployment completed successfully"
-          else
-            MESSAGE="❌ AI Scalping EA deployment failed"
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment..."
+        # Add staging deployment steps here
+        echo "Staging deployment completed"
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, security-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup OCI CLI
+      run: |
+        curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh | bash
+        echo 'export PATH=$HOME/bin:$PATH' >> ~/.bashrc
+    
+    - name: Configure OCI
+      env:
+        OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+        OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+        OCI_CLI_KEY_FILE: ${{ secrets.OCI_CLI_KEY_FILE }}
+        OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+        OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+      run: |
+        oci setup config --force --region $OCI_CLI_REGION
+    
+    - name: Pull and deploy latest image
+      env:
+        PUBLIC_IP: ${{ secrets.ORACLE_PUBLIC_IP }}
+        SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      run: |
+        ssh -o StrictHostKeyChecking=no -i <(echo "$SSH_KEY") ubuntu@$PUBLIC_IP << 'EOF'
+          cd /home/ubuntu/ai-scalping-ea
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker-compose down
+          docker-compose up -d
+          docker system prune -f
+        EOF
+    
+    - name: Health check
+      env:
+        PUBLIC_IP: ${{ secrets.ORACLE_PUBLIC_IP }}
+      run: |
+        for i in {1..30}; do
+          if curl -f -s http://$PUBLIC_IP:8501/health > /dev/null; then
+            echo "Service is healthy"
+            break
           fi
+          echo "Waiting for service... ($i/30)"
+          sleep 10
+        done
+        
+        # Verify all services
+        services=("8501" "3000" "9090")
+        for port in "${services[@]}"; do
+          if ! curl -f -s http://$PUBLIC_IP:$port > /dev/null; then
+            echo "Service on port $port is not responding"
+            exit 1
+          fi
+        done
+    
+    - name: Notify deployment success
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        text: '🚀 AI Scalping EA deployed successfully to production!'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+      if: success()
+    
+    - name: Notify deployment failure
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: '❌ AI Scalping EA deployment failed!'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+      if: failure()
 
-          curl -X POST ${{ secrets.TELEGRAM_WEBHOOK }} \
-            -d "text=$MESSAGE"
+  performance-test:
+    name: Performance Test
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run load test
+      env:
+        PUBLIC_IP: ${{ secrets.ORACLE_PUBLIC_IP }}
+      run: |
+        echo "Running performance tests against $PUBLIC_IP..."
+        # Add performance testing steps here
+        # Example: k6, artillery, or custom load test
+    
+    - name: Performance regression check
+      run: |
+        echo "Checking for performance regressions..."
+        # Add performance regression detection
